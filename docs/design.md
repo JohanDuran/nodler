@@ -15,7 +15,7 @@ development life cycle on GitHub Projects boards.
 
 | Concept | Meaning |
 |---|---|
-| **Project** | A repo + a GitHub Project board + a local clone + a test command + a workflow |
+| **Project** | A repo + a GitHub Project board + a local clone + a setup command (run once per worktree) + a test command + a workflow |
 | **Workflow** | A versioned state machine: statuses, transitions, rules |
 | **Status** | A board column. Its `kind` says who works on it: `agent`, `action` (built-in code), `human`, or `done` |
 | **Transition** | `from status + outcome → to status`, optionally with effects (e.g. `open_pr`) |
@@ -41,6 +41,17 @@ development life cycle on GitHub Projects boards.
 An agent status can produce: any outcome declared by its agent, `check_failed` (a
 post-check failed), or an error (handled by `max_errors` rules; otherwise retried).
 Built-in action statuses produce the outcomes listed in `nodler.actions`.
+
+## Card lifecycle in the worker
+
+1. Scan every enabled project's board; sync nodler's card record (pinning new cards to the
+   latest workflow version; a manual move out of a human status resets counters).
+2. Pick one card in an agent/action status: latest status in the workflow first, then board order.
+3. Lock it; for agents, ensure the card's worktree (`nodler/<issue>-<slug>`, setup command on creation),
+   build the prompt (card, project context, notes from earlier runs, human comments, optional diff), run.
+4. Post-checks may turn the outcome into `check_failed`; errors go through `max_errors` rules.
+5. `engine.decide` → effects (`open_pr`, `post_review`, `comment`) → move on the board → comment.
+6. Usage limit or login failure: no decision is made, the card stays, and the worker pauses.
 
 ## Auth
 

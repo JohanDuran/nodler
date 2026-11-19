@@ -1,7 +1,7 @@
 [project]
 name = "nodler"
 version = "0.1.0"
-description = "Add your description here"
+description = "Local orchestrator that runs an agentic software development life cycle on GitHub Projects boards"
 authors = [
     { name = "JohanDuran", email = "johan.durancerdas@gmail.com" }
 ]

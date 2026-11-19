@@ -4,7 +4,7 @@
     {
       "name": "nodler",
       "runtimeExecutable": "uv",
-      "runtimeArgs": ["--directory", "C:\\Users\\johan\\Documents\\Projects\\nodler", "run", "nodler", "serve", "--port", "8787", "--data", "C:\\Users\\johan\\Documents\\Projects\\nodler\\data"],
+      "runtimeArgs": ["run", "nodler", "serve", "--port", "8787"],
       "port": 8787
     }
   ]
