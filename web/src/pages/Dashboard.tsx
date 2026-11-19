@@ -33,6 +33,8 @@ export default function Dashboard() {
               Worker:{" "}
               {state.paused ? <span className="warn">paused</span>
                 : limited ? <span className="warn">waiting for usage limit reset ({new Date(state.paused_until! * 1000).toLocaleTimeString()})</span>
+                : state.github_wait_until && state.github_wait_until * 1000 > Date.now()
+                  ? <span className="warn">waiting for GitHub's API limit ({new Date(state.github_wait_until * 1000).toLocaleTimeString()})</span>
                 : state.current ? <span className="ok">working</span>
                 : <span className="ok">idle, watching boards</span>}
             </h2>
@@ -50,7 +52,14 @@ export default function Dashboard() {
             ANTHROPIC_API_KEY is set in nodler's environment, so runs would be billed to the API instead of your Claude plan.
           </div>
         )}
-        {state.last_error && <div className="notice err" style={{ marginTop: 12 }}>{state.last_error}</div>}
+        {state.last_error && (
+          <div className="notice err" style={{ marginTop: 12 }}>
+            {state.last_error}
+            {/not connected|login|authenticat/i.test(state.last_error) && (
+              <div style={{ marginTop: 8 }}><a className="btn primary" href="#setup">Reconnect in Setup</a></div>
+            )}
+          </div>
+        )}
         {state.warnings.map((w) => <div key={w} className="notice warn" style={{ marginTop: 12 }}>{w}</div>)}
       </div>
 

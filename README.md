@@ -120,17 +120,32 @@ outcome), so a coder that reports `blocked` doesn't fail them.
 - **Python 3.12+** and [uv](https://docs.astral.sh/uv/)
 - **Node.js 18+**, only needed to rebuild the web UI
 - **git**
-- **GitHub CLI** (`gh`), logged in, with the `project` scope:
-  ```bash
-  gh auth login
-  gh auth refresh -s project
-  ```
-- **A Claude Code login on the machine.** The Agent SDK runs the bundled Claude Code binary, which uses
-  your login:
-  ```bash
-  claude        # then type /login
-  claude auth status
-  ```
+- **GitHub CLI** (`gh`), installed. You don't need to log in from a terminal: the **Setup** page does it.
+- **A Claude subscription** (e.g. Pro or Max). The Agent SDK bundles Claude Code, and the **Setup** page signs
+  it in.
+
+### Connecting accounts (no terminal needed)
+
+When something is missing, nodler opens on the **Setup** page, which walks through four steps:
+
+| Step | What happens |
+|---|---|
+| **Connect Claude** | nodler runs Claude Code's own browser login (`claude auth login`) with the SDK's bundled binary. A claude.ai tab opens; sign in and approve. If the page shows a code, paste it into nodler. The step then shows your account and plan |
+| **Connect GitHub** | nodler starts GitHub's device login (`gh auth login --web`, or `gh auth refresh` to add missing permissions). It shows a **one-time code**: click **Copy code & open GitHub**, paste it, approve. Permissions requested: `project`, `repo`, `read:org` |
+| **Git** | Checks that git is installed. If it isn't, nodler shows the install command and download link (same for the GitHub CLI) |
+| **Add your first project** | Pick a repository from your list. nodler downloads it (or uses a folder you name), **detects the install and test commands** (npm/pnpm/yarn, uv/pip, Go, Rust), and **creates a GitHub project board** with the workflow's columns, linked to the repo |
+
+nodler never sees your passwords or tokens. Both logins happen on the official claude.ai and github.com
+pages, and the tokens stay where each tool normally keeps them. The buttons work because nodler runs on the
+same computer as your browser.
+
+If a login expires later, the worker pauses and the dashboard shows **Reconnect in Setup**.
+
+Terminal alternative, if you prefer it:
+```bash
+gh auth login --web --scopes project,repo,read:org
+claude          # then type /login
+```
 
 ## Installation
 
@@ -157,6 +172,11 @@ uv run nodler serve          # http://127.0.0.1:8787
 The worker **starts paused**. Press **Resume** on the dashboard once a project is set up.
 
 ## Quick start
+
+The fastest way: start nodler, open http://127.0.0.1:8787, and follow the **Setup** page (above). After
+"Add your first project", jump to step 5 below.
+
+Manual setup, e.g. to use an existing board:
 
 1. **Create a GitHub Project** for your repo and link it to the repo.
 2. **Set its `Status` field options** to match the workflow's statuses. For the default workflow:
@@ -186,7 +206,8 @@ The worker **starts paused**. Press **Resume** on the dashboard once a project i
 | **Dashboard** | Pause or resume the worker, trigger a board check, watch the live log of the current run, see warnings and recent runs |
 | **Workflows** | Edit the state machine as a graph. Click a status to set its kind and agent or action, then wire **each outcome to a target status** and toggle effects. Drag from a status's right handle to another status to add a transition. Edit **rules** and the **fallback status**. Saving creates a new version; older versions open read-only. **Duplicate** a workflow to make a variant |
 | **Agents** | Create and edit agents: role prompt, model (`opus` / `sonnet` / `haiku` or a full id), effort, max turns, workspace, **tools**, outcomes, post-checks, "include branch diff in prompt", extra blocked commands |
-| **Projects** | Register repos and boards, and run the setup check |
+| **Projects** | Register repos and boards (or edit what Setup created), and run the setup check |
+| **Setup** | Connect Claude and GitHub, check tools, add a project in one click |
 | **Runs** | History of every run with outcome, summary, log, turns and equivalent cost |
 
 The editor validates continuously: unknown agents, outcomes a status can't produce, duplicate transitions and
@@ -230,8 +251,8 @@ but not the process. Only point nodler at repos you trust. Consider a dedicated 
   run in that case unless you allow it explicitly (setting `allow_api_key`).
 - When Claude Code reports a **usage limit** (`RateLimitEvent` with status `rejected`), the worker pauses
   until the reported reset time. The card stays where it is, and no error is counted against it.
-- When the **login is missing or expired**, the worker pauses and the dashboard tells you to run
-  `claude` → `/login`.
+- When the **login is missing or expired**, the worker pauses and the dashboard links to **Setup** to
+  reconnect.
 - The "cost" shown for runs is the equivalent API cost reported by Claude Code. It's useful for comparing
   runs; on a subscription you aren't billed that amount.
 
@@ -266,8 +287,19 @@ your plan.
 
 The worker processes **one card at a time**. Among all cards in agent or action statuses, it picks the one in
 the status that comes latest in the workflow (finishing work comes before starting new work), then follows
-board order. It checks boards every 30 seconds, immediately after finishing a card, or when you press
+board order. It checks boards every 60 seconds, immediately after finishing a card, or when you press
 **Check boards now**.
+
+### GitHub API budget
+
+GitHub Projects is only reachable through GitHub's GraphQL API, which allows each user 5,000 points per hour,
+shared by every tool you use with that account. nodler keeps its use low:
+- It caches each board's layout (project, field and column ids) for 10 minutes.
+- It only fetches cards in statuses it works on (`--query status:…`), not the whole board.
+- It checks boards every 60 seconds.
+
+If the limit is hit anyway, nodler waits until GitHub's reset time and says so on the dashboard. (`gh project`
+reports this as "unknown owner type"; nodler recognizes it.)
 
 ### Manual moves
 
@@ -293,12 +325,14 @@ src/nodler/
   defaults.py   starter agents (coder, reviewer) and workflow
   worker.py     the loop: scan boards, pick a card, run worker, check, effects, move
   runner.py     Claude Agent SDK wrapper: options, guard hook, structured outcome, rate limits
-  github.py     gh CLI adapter: Projects v2 board, issues, PRs
+  github.py     gh CLI adapter: Projects v2 board, issues, PRs, repo list, board creation, rate limits
+  auth.py       status of Claude / GitHub / git and guided browser logins (LoginManager)
+  detect.py     guesses a repo's setup and test commands
   gitops.py     worktrees, rebase, push, diff, tests
   store.py      SQLite store (JSON documents; workflows are append-only versions)
   api.py        FastAPI REST API + serves the built UI + runs the worker
 web/src/
-  pages/        Dashboard, WorkflowEditor (React Flow), Agents, Projects, Runs
+  pages/        Dashboard, WorkflowEditor (React Flow), Agents, Projects, Runs, Setup
 docs/design.md  design principles and decisions
 ```
 
@@ -311,8 +345,9 @@ Current limitations:
 
 - One card at a time, with no parallel cards yet.
 - No container sandbox for agents (see [safety](#role-enforcement-and-safety)).
-- Board columns aren't created automatically: add missing `Status` options on GitHub (the setup check lists
-  them).
+- Setup creates boards with the right columns, but nodler doesn't edit the columns of an existing board,
+  because replacing Status options would clear the cards' statuses. Add missing options on GitHub (the setup
+  check lists them).
 - Draft board items are skipped. Convert them to issues.
 - The coder and reviewer act through one GitHub identity. nodler posts reviews as PR comments rather than
   formal approvals.

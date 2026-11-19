@@ -31,10 +31,14 @@ def is_nodler_comment(body: str) -> bool:
 
 
 class Worker:
-    def __init__(self, store: Store, data_dir: Path, poll_seconds: int = 30):
+    BOARD_TTL = 600  # seconds to cache a board's layout
+
+    def __init__(self, store: Store, data_dir: Path, poll_seconds: int = 60):
         self.store = store
         self.data_dir = data_dir
         self.poll_seconds = poll_seconds
+        self._boards: dict[str, tuple[gh.Board, float]] = {}
+        self.github_wait_until: float | None = None  # GitHub API rate limit back-off
         self.paused: bool = bool(store.get_setting("paused", True))  # start paused until the user resumes
         self.paused_until: float | None = None
         self.current: dict | None = None  # the card being processed right now (for the UI)
@@ -53,6 +57,7 @@ class Worker:
             "warnings": self.warnings,
             "last_tick": self.last_tick,
             "last_error": self.last_error,
+            "github_wait_until": self.github_wait_until,
             "api_key_in_env": api_key_in_env(),
         }
 
@@ -100,6 +105,9 @@ class Worker:
             self.warnings = ["ANTHROPIC_API_KEY is set: runs would be billed to the API instead of your plan. "
                              "Unset it (or allow it in settings)."]
             return False
+        if self.github_wait_until and time.time() < self.github_wait_until:
+            return False
+        self.github_wait_until = None
         warnings: list[str] = []
         candidates: list[tuple] = []
         for project in self.store.list_projects():
@@ -109,6 +117,11 @@ class Worker:
                 found = await to_thread(self._scan_project, project, warnings)
                 candidates.extend(found)
             except CommandError as exc:
+                if gh.is_rate_limited(str(exc)):
+                    self.github_wait_until = await to_thread(gh.graphql_reset_time)
+                    when = time.strftime("%H:%M", time.localtime(self.github_wait_until))
+                    self.warnings = [f"GitHub's hourly API limit was reached; nodler will check the boards again at {when}."]
+                    return False
                 warnings.append(f"[{project.name}] {exc}")
         self.warnings = warnings
         if not candidates:
@@ -124,12 +137,17 @@ class Worker:
         if workflow_latest is None:
             warnings.append(f"[{project.name}] workflow '{project.workflow_id}' not found")
             return []
-        board = gh.load_board(project.board_owner, project.board_number)
+        board = self._board(project)
         missing = [s.name for s in workflow_latest.statuses if s.name.strip().lower() not in board.options]
         if missing:
             warnings.append(f"[{project.name}] board is missing Status options: {', '.join(missing)}")
+        # Only fetch cards nodler may work on: the API cost grows with the number of items returned.
+        worked = [s.name for s in workflow_latest.statuses if s.kind in ("agent", "action")]
+        if not worked:
+            return []
         out = []
-        for order, item in enumerate(gh.list_items(project.board_owner, project.board_number)):
+        items = gh.list_items(project.board_owner, project.board_number, statuses=worked)
+        for order, item in enumerate(items):
             if not item.status:
                 continue
             card = self.store.get_card(item.item_id)
@@ -151,6 +169,15 @@ class Worker:
             position = workflow.statuses.index(status)
             out.append((position, order, project, board, item, card, workflow, status))
         return out
+
+    def _board(self, project: Project, refresh: bool = False) -> gh.Board:
+        """Board layout (ids of the project, Status field and options), cached: it rarely changes."""
+        key = f"{project.board_owner}/{project.board_number}"
+        cached = self._boards.get(key)
+        if refresh or cached is None or time.time() - cached[1] > self.BOARD_TTL:
+            cached = (gh.load_board(project.board_owner, project.board_number), time.time())
+            self._boards[key] = cached
+        return cached[0]
 
     def _sync_card(self, project: Project, item: gh.BoardItem, card: Card | None, workflow: Workflow,
                    status: Status) -> Card:
@@ -206,6 +233,7 @@ class Worker:
             await to_thread(self._move, project, board, card, workflow, status, outcome, decision)
         except Exception as exc:
             log.exception("processing failed")
+            self._boards.clear()  # a stale board layout is a common cause (e.g. a renamed column)
             run.error = f"{type(exc).__name__}: {exc}"
             run.outcome = run.outcome or ERROR
             card.errors[status.id] = card.errors.get(status.id, 0) + 1
@@ -258,8 +286,9 @@ class Worker:
         if result.error and is_auth_error(result.error):
             # Not the card's fault: stop everything until the user logs in again.
             self.set_paused(True)
-            self.last_error = ("Claude login problem; the worker was paused. Run `claude` in a terminal and use "
-                               f"/login, then resume. ({result.error.splitlines()[0][:200]})")
+            self.last_error = ("Claude is not connected (login missing or expired), so the worker was paused. "
+                               "Open Setup, connect Claude, then resume. "
+                               f"({result.error.splitlines()[0][:200]})")
             run.error = result.error
             if agent.workspace == "read":
                 await to_thread(gitops.discard_changes, cwd)

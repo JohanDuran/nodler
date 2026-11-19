@@ -9,9 +9,14 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
+from . import auth
 from . import github as gh
 from .catalog import ACTIONS, BUILTIN_TOOLS, EFFECTS, POST_CHECKS
+from .detect import detect_commands
+from .gitops import slug
+from .proc import run as run_cmd
 from .engine import possible_outcomes
 from .models import Agent, Project, Workflow
 from .proc import CommandError
@@ -22,9 +27,21 @@ from .worker import Worker
 STATIC = Path(__file__).parent / "static"
 
 
-def create_app(data_dir: Path, start_worker: bool = True) -> FastAPI:
+class QuickProject(BaseModel):
+    repo: str  # owner/name
+    local_path: str = ""  # existing clone; empty = nodler clones it into its data folder
+    workflow_id: str = "default"
+    create_board: bool = True
+
+
+class LoginInput(BaseModel):
+    text: str
+
+
+def create_app(data_dir: Path, start_worker: bool = True, logins: auth.LoginManager | None = None) -> FastAPI:
     store = Store(data_dir / "nodler.db")
     worker = Worker(store, data_dir)
+    logins = logins or auth.LoginManager()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -58,10 +75,97 @@ def create_app(data_dir: Path, start_worker: bool = True) -> FastAPI:
     def catalog():
         return {"actions": ACTIONS, "effects": EFFECTS, "post_checks": POST_CHECKS, "tools": BUILTIN_TOOLS}
 
+    # ---------------------------------------------------------------- setup & logins
+    @app.get("/api/setup")
+    def setup():
+        status = auth.setup_status()
+        status["projects"] = len(store.list_projects())
+        status["logins"] = {p: (s.public() if (s := logins.current(p)) else None) for p in ("claude", "github")}
+        return status
+
+    @app.post("/api/setup/login/{provider}")
+    def start_login(provider: str):
+        if provider not in ("claude", "github"):
+            raise HTTPException(404, "unknown provider")
+        try:
+            return logins.start(provider).public()
+        except RuntimeError as exc:
+            raise HTTPException(400, str(exc))
+
+    @app.get("/api/setup/login/{provider}")
+    def login_progress(provider: str):
+        s = logins.current(provider)
+        return s.public() if s else None
+
+    @app.post("/api/setup/login/{provider}/input")
+    def login_input(provider: str, body: LoginInput):
+        s = logins.current(provider)
+        if s is None:
+            raise HTTPException(404, "no login in progress")
+        return logins.send_input(s.id, body.text).public()
+
+    @app.post("/api/setup/login/{provider}/cancel")
+    def cancel_login(provider: str):
+        s = logins.current(provider)
+        if s is None:
+            raise HTTPException(404, "no login in progress")
+        return logins.cancel(s.id).public()
+
+    @app.get("/api/github/repos")
+    def github_repos():
+        try:
+            return gh.list_repos()
+        except CommandError as exc:
+            raise HTTPException(400, str(exc))
+
     # ---------------------------------------------------------------- projects
     @app.get("/api/projects")
     def projects():
         return store.list_projects()
+
+    @app.post("/api/projects/quick")
+    def quick_project(body: QuickProject):
+        """One click: clone (if needed), detect commands, create a board with the workflow's columns."""
+        workflow = store.get_workflow(body.workflow_id)
+        if workflow is None:
+            raise HTTPException(400, f"workflow '{body.workflow_id}' does not exist")
+        if "/" not in body.repo:
+            raise HTTPException(400, "repo must look like owner/name")
+        owner, name = body.repo.split("/", 1)
+        project_id = slug(name, 30)
+        existing = {p.id for p in store.list_projects()}
+        if any(p.repo.lower() == body.repo.lower() for p in store.list_projects()):
+            raise HTTPException(400, f"{body.repo} is already a nodler project")
+        n = 2
+        base_id = project_id
+        while project_id in existing:
+            project_id, n = f"{base_id}-{n}", n + 1
+        try:
+            info = gh.gh_json(["repo", "view", body.repo, "--json", "defaultBranchRef"])
+            base = (info.get("defaultBranchRef") or {}).get("name") or "main"
+            local = Path(body.local_path).expanduser() if body.local_path.strip() else data_dir / "repos" / project_id
+            if not (local / ".git").exists():
+                if local.exists() and any(local.iterdir()):
+                    raise HTTPException(400, f"{local} exists and is not a git clone")
+                local.parent.mkdir(parents=True, exist_ok=True)
+                run_cmd(["gh", "repo", "clone", body.repo, str(local)], timeout=1800)
+            detected = detect_commands(local)
+            board_number, board_url = 0, None
+            if body.create_board:
+                board_number, board_url = gh.create_board(
+                    owner, f"{name} (nodler)", body.repo, [s.name for s in workflow.statuses]
+                )
+        except CommandError as exc:
+            raise HTTPException(400, str(exc))
+        project = Project(
+            id=project_id, name=name, repo=body.repo, board_owner=owner, board_number=board_number,
+            local_path=str(local), base_branch=base, setup_command=detected["setup_command"],
+            test_command=detected["test_command"], workflow_id=workflow.id,
+            context=f"{detected['stack']} project." if detected["stack"] else "",
+        )
+        store.save_project(project)
+        worker.poke()
+        return {"project": project, "board_url": board_url}
 
     @app.put("/api/projects/{project_id}")
     def save_project(project_id: str, project: Project):
@@ -86,9 +190,11 @@ def create_app(data_dir: Path, start_worker: bool = True) -> FastAPI:
         checks = []
         local = Path(project.local_path)
         checks.append({"name": "Local clone exists", "ok": (local / ".git").exists(), "detail": str(local)})
-        scopes = gh.auth_scopes()
-        checks.append({"name": "gh token has 'project' scope", "ok": "'project'" in scopes,
-                       "detail": "Run: gh auth refresh -s project" if "'project'" not in scopes else ""})
+        gh_state = auth.github_status()
+        missing = gh_state.get("missing_scopes", [])
+        checks.append({"name": "GitHub connected with the needed permissions",
+                       "ok": gh_state.get("logged_in", False) and not missing,
+                       "detail": "Open Setup and connect GitHub" if missing else ""})
         workflow = store.get_workflow(project.workflow_id)
         try:
             board = gh.load_board(project.board_owner, project.board_number)

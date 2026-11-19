@@ -110,6 +110,33 @@ tr.clickable:hover td, tr.selected td { background: var(--accent-soft); }
 .log .error, .log .check_failed { color: var(--err); }
 .log .rate_limit, .log .info { color: var(--muted); }
 
+/* setup */
+.setup { max-width: 760px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
+.setup h1 { font-size: 22px; margin: 0 0 4px; }
+.step-head { display: flex; gap: 14px; align-items: center; }
+.step-n {
+  width: 34px; height: 34px; border-radius: 50%; flex: none; display: grid; place-items: center;
+  font-weight: 700; background: var(--accent-soft); color: var(--accent);
+}
+.step.done .step-n { background: var(--done); color: white; }
+.step.locked { opacity: .55; }
+.step-body { margin-top: 14px; padding-left: 48px; }
+@media (max-width: 600px) { .step-body { padding-left: 0; } }
+button.big, .btn.big { padding: 9px 18px; font-size: 15px; }
+a.btn { display: inline-block; text-decoration: none; }
+a.btn.primary { background: var(--accent); border-color: var(--accent); color: white; }
+.login-box p { margin: 6px 0; }
+.device-code {
+  font-family: var(--mono); font-size: 32px; font-weight: 700; letter-spacing: 4px; padding: 10px 18px;
+  border: 2px dashed var(--accent); border-radius: 10px; display: inline-block; margin: 4px 0 8px; user-select: all;
+}
+.waiting::before { content: "⏳ "; }
+code.cmd { font-family: var(--mono); background: var(--bg); border: 1px solid var(--border); padding: 4px 8px; border-radius: 6px; }
+.repo-list { display: flex; flex-direction: column; gap: 4px; max-height: 260px; overflow: auto; margin-top: 8px; }
+.repo-list button { text-align: left; border: 1px solid var(--border); }
+.repo-list button.active { border-color: var(--accent); background: var(--accent-soft); }
+nav .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--err); margin-left: 6px; vertical-align: middle; }
+
 /* workflow editor */
 .wf { display: grid; grid-template-columns: 1fr 360px; gap: 16px; height: calc(100vh - 92px); }
 @media (max-width: 1000px) { .wf { grid-template-columns: 1fr; height: auto; } .wf .canvas { height: 480px; } }

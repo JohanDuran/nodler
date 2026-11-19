@@ -107,8 +107,32 @@ export interface WorkerState {
   warnings: string[];
   last_tick: number | null;
   last_error: string | null;
+  github_wait_until: number | null;
   api_key_in_env: boolean;
 }
+
+export interface LoginSession {
+  id: string;
+  provider: "claude" | "github";
+  state: "starting" | "waiting" | "succeeded" | "failed" | "cancelled";
+  url: string | null;
+  code: string | null;
+  message: string;
+  output: string[];
+}
+
+export interface InstallHint { windows: string; url: string }
+
+export interface SetupStatus {
+  ready: boolean;
+  projects: number;
+  claude: { installed: boolean; logged_in: boolean; email?: string; plan?: string; error?: string };
+  github: { installed: boolean; logged_in: boolean; account?: string; missing_scopes?: string[]; install?: InstallHint };
+  git: { installed: boolean; version?: string; install?: InstallHint };
+  logins: { claude: LoginSession | null; github: LoginSession | null };
+}
+
+export interface RepoInfo { repo: string; description: string; private: boolean; default_branch: string; updated_at: string }
 
 export interface Catalog {
   actions: Record<string, { description: string; outcomes: Record<string, string> }>;
