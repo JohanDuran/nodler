@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "nodler",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": ["--directory", "C:\\Users\\johan\\Documents\\Projects\\nodler", "run", "nodler", "serve", "--port", "8787", "--data", "C:\\Users\\johan\\Documents\\Projects\\nodler\\data"],
+      "port": 8787
+    }
+  ]
+}
